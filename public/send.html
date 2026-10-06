@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PhotoDrop</title>
+  <link rel="icon" href="/icon-96.png" sizes="96x96">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    :root { --bg:#0e1116; --card:#181c24; --text:#eef1f6; --muted:#9aa3b2; --accent:#0bd3ff; --ok:#3cf58a; --err:#ff6b6b; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:system-ui,sans-serif; padding:16px; }
+    main { max-width:480px; margin:0 auto; }
+    h1 { font-size:26px; margin:8px 0 4px; }
+    p.sub { color:var(--muted); margin:0 0 18px; }
+    .card { background:var(--card); border-radius:16px; padding:16px; margin-bottom:14px; }
+    label { display:block; font-size:14px; color:var(--muted); margin-bottom:6px; }
+    input[type=text] { width:100%; padding:12px; border-radius:10px; border:1px solid #2c3340; background:#0e1116; color:var(--text); font-size:16px; }
+    .btn { display:block; width:100%; padding:16px; border:0; border-radius:12px; font-size:18px; font-weight:700; cursor:pointer; margin-top:10px; text-align:center; }
+    .primary { background:var(--accent); color:#00141a; }
+    .ghost { background:transparent; color:var(--muted); border:1px solid #2c3340; font-size:15px; padding:12px; }
+    #status { min-height:22px; margin-top:10px; font-size:15px; }
+    .ok { color:var(--ok); } .err { color:var(--err); }
+    #thumbs { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:12px; }
+    #thumbs img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; }
+    #qr { background:#fff; padding:12px; border-radius:12px; width:max-content; margin:12px auto 6px; }
+    details summary { cursor:pointer; font-weight:600; }
+    code { word-break:break-all; font-size:12px; color:var(--muted); }
+    input[type=file] { display:none; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>PhotoDrop</h1>
+  <p class="sub">Send photos from this phone to your Meta Ray-Ban Display.</p>
+
+  <div class="card">
+    <label for="key">Secret key (same as PHOTODROP_KEY on your server)</label>
+    <input id="key" type="text" autocomplete="off" autocapitalize="off" spellcheck="false">
+  </div>
+
+  <div class="card">
+    <label class="btn primary" for="pick">📷 Choose / take photo</label>
+    <input id="pick" type="file" accept="image/*" multiple>
+    <div id="status"></div>
+    <div id="thumbs"></div>
+    <button class="btn ghost" id="clear">Clear photos from glasses</button>
+  </div>
+
+  <div class="card">
+    <details id="setup">
+      <summary>Add to glasses (one-time)</summary>
+      <p class="sub" style="margin-top:10px">With developer mode on, look at this code with your glasses and confirm. It'll be marked "unverified" — that's expected for your own app.</p>
+      <div id="qr"></div>
+      <code id="deeplink"></code>
+    </details>
+  </div>
+</main>
+
+<script>
+  var keyInput = document.getElementById('key');
+  var statusEl = document.getElementById('status');
+  var thumbs = document.getElementById('thumbs');
+
+  try { keyInput.value = localStorage.getItem('photodrop-key') || ''; } catch (e) {}
+  keyInput.addEventListener('input', function () {
+    try { localStorage.setItem('photodrop-key', keyInput.value); } catch (e) {}
+    makeQR();
+  });
+
+  function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ''; }
+  function api(path) { return path + '?key=' + encodeURIComponent(keyInput.value.trim()); }
+
+  // Shrink to fit the 600x600 display — faster to send, faster to load on the glasses.
+  function resize(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file);
+      var im = new Image();
+      im.onload = function () {
+        var s = Math.min(1, 600 / Math.max(im.width, im.height));
+        var c = document.createElement('canvas');
+        c.width = Math.round(im.width * s);
+        c.height = Math.round(im.height * s);
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob(function (b) { b ? resolve(b) : reject(new Error('encode failed')); }, 'image/jpeg', 0.85);
+      };
+      im.onerror = function () { reject(new Error('could not read that image')); };
+      im.src = url;
+    });
+  }
+
+  document.getElementById('pick').addEventListener('change', async function (e) {
+    var files = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (!files.length) return;
+    if (!keyInput.value.trim()) return setStatus('Enter your secret key first.', 'err');
+    for (var i = 0; i < files.length; i++) {
+      setStatus('Sending ' + (i + 1) + ' of ' + files.length + '…');
+      try {
+        var blob = await resize(files[i]);
+        var r = await fetch(api('/api/photo'), { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: blob });
+        if (r.status === 401) throw new Error('wrong key');
+        if (!r.ok) throw new Error('upload failed (' + r.status + ')');
+        var t = document.createElement('img');
+        t.src = URL.createObjectURL(blob);
+        thumbs.prepend(t);
+      } catch (err) {
+        return setStatus('✗ ' + err.message, 'err');
+      }
+    }
+    setStatus('✓ Sent — check your glasses', 'ok');
+  });
+
+  document.getElementById('clear').addEventListener('click', async function () {
+    var r = await fetch(api('/api/photos'), { method: 'DELETE' });
+    if (r.ok) { thumbs.innerHTML = ''; setStatus('Cleared', 'ok'); }
+    else setStatus(r.status === 401 ? '✗ wrong key' : '✗ failed', 'err');
+  });
+
+  // Install link for the glasses: fb-viewapp deep link wrapping the viewer URL.
+  function makeQR() {
+    var viewer = location.origin + '/glasses?key=' + encodeURIComponent(keyInput.value.trim());
+    var link = 'fb-viewapp://web_app_deep_link?appName=PhotoDrop&appUrl=' + encodeURIComponent(viewer);
+    document.getElementById('deeplink').textContent = link;
+    var box = document.getElementById('qr');
+    box.innerHTML = '';
+    if (window.QRCode) new QRCode(box, { text: link, width: 220, height: 220 });
+  }
+  makeQR();
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    setStatus('Heads up: the glasses need an https:// address.', 'err');
+  }
+</script>
+</body>
+</html>

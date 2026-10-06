@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=600, height=600, initial-scale=1.0, user-scalable=no">
+  <meta name="description" content="Shows photos sent from your phone">
+  <meta name="mrbd-web-app-capable" content="yes">
+  <meta name="application-name" content="PhotoDrop">
+  <link rel="icon" href="/icon-96.png" sizes="96x96">
+  <title>PhotoDrop</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 600px; height: 600px; overflow: hidden;
+      background: #000; color: #fff;
+      font-family: system-ui, sans-serif;
+    }
+    #stage {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #photo {
+      max-width: 600px; max-height: 600px; object-fit: contain;
+      display: none;
+    }
+    #empty {
+      text-align: center; font-size: 26px; line-height: 1.4; color: #9fe8ff;
+      padding: 40px;
+    }
+    #empty small { display: block; font-size: 18px; color: #ccc; margin-top: 12px; }
+    #bar {
+      position: absolute; left: 0; right: 0; bottom: 0;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 18px; font-size: 18px; color: #fff;
+      background: linear-gradient(transparent, rgba(0,0,0,.85));
+      opacity: 1; transition: opacity .4s;
+    }
+    #bar.hide { opacity: 0; }
+    #live { color: #3cf58a; font-weight: 600; }
+    #live.off { color: #ffb84d; }
+    #toast {
+      position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+      background: #0bd3ff; color: #000; font-weight: 700; font-size: 20px;
+      padding: 8px 18px; border-radius: 20px; display: none;
+    }
+    /* Invisible focus target so Enter / arrows land on the page */
+    #focus { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <img id="photo" alt="">
+    <div id="empty">Waiting for photos…<small>Send one from your phone</small></div>
+  </div>
+  <div id="toast">New photo</div>
+  <div id="bar">
+    <span id="count">0 / 0</span>
+    <span id="live">● Live</span>
+  </div>
+  <button id="focus" tabindex="0" aria-label="Photo viewer"></button>
+
+  <script>
+    var KEY = new URLSearchParams(location.search).get('key') || '';
+    var photos = [];      // [{id, ts}]
+    var index = -1;       // which photo is showing
+    var follow = true;    // jump to newest automatically
+    var lastNewest = null;
+    var barTimer = null;
+
+    var img = document.getElementById('photo');
+    var empty = document.getElementById('empty');
+    var count = document.getElementById('count');
+    var live = document.getElementById('live');
+    var bar = document.getElementById('bar');
+    var toast = document.getElementById('toast');
+
+    function api(path) {
+      return path + (path.indexOf('?') < 0 ? '?' : '&') + 'key=' + encodeURIComponent(KEY);
+    }
+
+    function showBar() {
+      bar.classList.remove('hide');
+      clearTimeout(barTimer);
+      barTimer = setTimeout(function () { bar.classList.add('hide'); }, 3000);
+    }
+
+    function render() {
+      if (!photos.length) {
+        img.style.display = 'none';
+        empty.style.display = 'block';
+        count.textContent = '0 / 0';
+        return;
+      }
+      index = Math.max(0, Math.min(index, photos.length - 1));
+      var p = photos[index];
+      img.src = api('/api/photo/' + p.id);
+      img.style.display = 'block';
+      empty.style.display = 'none';
+      count.textContent = (index + 1) + ' / ' + photos.length;
+      live.textContent = follow ? '● Live' : '❚❚ Paused';
+      live.className = follow ? '' : 'off';
+      live.id = 'live';
+    }
+
+    function flash(msg) {
+      toast.textContent = msg;
+      toast.style.display = 'block';
+      setTimeout(function () { toast.style.display = 'none'; }, 1500);
+    }
+
+    function poll() {
+      fetch(api('/api/photos'), { cache: 'no-store' })
+        .then(function (r) {
+          if (r.status === 401) throw new Error('key');
+          return r.json();
+        })
+        .then(function (list) {
+          var newest = list.length ? list[list.length - 1].id : null;
+          var isNew = newest && newest !== lastNewest;
+          var currentId = photos[index] && photos[index].id;
+          photos = list;
+          if (isNew && lastNewest !== null) flash('New photo');
+          lastNewest = newest;
+          if (follow) {
+            index = photos.length - 1;
+          } else {
+            // keep showing the same photo if it still exists
+            var i = photos.findIndex(function (x) { return x.id === currentId; });
+            index = i >= 0 ? i : photos.length - 1;
+          }
+          if (isNew || !currentId) { render(); if (isNew) showBar(); }
+          else count.textContent = photos.length ? (index + 1) + ' / ' + photos.length : '0 / 0';
+        })
+        .catch(function (e) {
+          if (e.message === 'key') {
+            empty.innerHTML = 'Wrong or missing key<small>Re-add the app from the QR code on your phone</small>';
+          }
+        });
+    }
+
+    document.addEventListener('keydown', function (e) {
+      switch (e.key) {
+        case 'ArrowLeft':
+        case 'ArrowUp':
+          if (index > 0) { index--; follow = false; render(); }
+          break;
+        case 'ArrowRight':
+        case 'ArrowDown':
+          if (index < photos.length - 1) { index++; render(); }
+          if (index === photos.length - 1) { follow = true; render(); }
+          break;
+        case 'Enter':
+          follow = !follow;
+          if (follow) index = photos.length - 1;
+          render();
+          flash(follow ? 'Live' : 'Paused');
+          break;
+        default:
+          return; // let Back/Escape reach the system
+      }
+      showBar();
+      e.preventDefault();
+    });
+
+    document.getElementById('focus').focus();
+    poll();
+    setInterval(poll, 2000);
+    showBar();
+  </script>
+</body>
+</html>
